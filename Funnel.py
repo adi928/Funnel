@@ -7,7 +7,7 @@ from pprint import pprint
 import feedparser
 from newspaper import Article
 import yara
-
+import redis;
 
 conn = None
 
@@ -22,6 +22,7 @@ def isMatch(rule, target_path):
 
 def compileRules(rule_path):
     ruleSet=[]
+    files = os.walk(rule_path)
     for root, sub, files in os.walk(rule_path):
         #print("Compiling Rules")
         for file in files:
@@ -55,7 +56,7 @@ def scanTargetLink(target_path, ruleSet ):
     for rule in ruleSet:
         matches = rule.match("tmp")
         if(matches):
-            
+
             print("URL: "+ target_path)
             for match in matches:
                 results.append(match)
@@ -85,14 +86,10 @@ def main():
 
     args = parser.parse_args()
 
-    db_path = "funnel.db"
+    idF = 0
 
-    conn = sqlite3.connect(db_path)
-
-    #Create db if it doesn't exist
-
-    conn.execute('CREATE TABLE IF NOT EXISTS links (id INTEGER PRIMARY KEY, url TEXT, title TEXT, UNIQUE(url) )')
-    conn.execute('CREATE TABLE IF NOT EXISTS rules (id INTEGER, rule TEXT)')
+    redis_db = redis.StrictRedis()
+    redis_db.flushall()
 
     if(args.verbose): print("Loading rules")
 
@@ -113,7 +110,7 @@ def main():
                 feed = feedparser.parse(source["url"])
 
                 for post in feed.entries:
-                    print(post.link)
+                    if (args.verbose): print(post.link)
                     if("http" in post.link):
                         try:
                             matches = scanTargetLink(post.link, ruleset)
@@ -121,24 +118,19 @@ def main():
                             print(e)
 
                         if(matches):
-                            com = "INSERT OR IGNORE INTO links (id, url, title) VALUES (NULL, ?, ?)"
-                            conn.execute(com,(post.link, post.title))
-                            conn.commit()
-
+                            keyPart = str(idF) + ':' + post.link
+                            redis_db.sadd(keyPart, post.title)
+                            idF += 1
                             for match in matches:
-                                print(str(match))
-                                cursor = conn.execute("SELECT id FROM links WHERE url = '"+post.link+"'")
-                                link_id = None
-                                for row in cursor:
-                                    link_id= row[0]
+                                redis_db.sadd(keyPart, str(match))
 
-                                #print("ID: "+str(link_id))
-                                com = "INSERT INTO rules (id, rule) VALUES (?, ?)"
-                                conn.execute(com , (link_id, str(match)))
-                            
-                        conn.commit()
 
-    conn.close()
+    print ("-----------------------------------Result-------------------------------------------------")
+    for key in redis_db.keys():
+        print("URL: " + str(key)[2:])
+        elements = redis_db.sscan(key)
+        print("Match: " + str(elements[1][0]))
+        print("Title: " + str(elements[1][1]))
 
 if __name__ == "__main__":
     main()
